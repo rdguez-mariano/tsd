@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt      # plotting
 import rasterio       # read/write geotiffs
 import utils          # IO and coordinate system conversion tools
 import pandas as pd
+import random
 
 
 from tsd import s2_metadata_parser
@@ -23,10 +24,88 @@ import glob
 from dateutil.relativedelta import relativedelta
 from library import *
 
+def get_all_L1C_bands(tile,title,outdir, flush = False):
+    """ Get all bands from the level 1C
+    these bands differ in spatial resolution:
+    https://sentinels.copernicus.eu/web/sentinel/user-guides/sentinel-2-msi/resolutions/spatial
+    """
+    if flush:
+        mkdir("./"+outdir)
+        os.system("rm -r ./"+outdir)
+        mkdir("./"+outdir)
+    bands = ["B%.2i"%(i+1) for i in range(12)]
+    get_time_series(bands=bands,
+                    tile_id=tile,
+                    title= title+'.SAFE',
+                    out_dir=outdir,
+                    api='scihub',
+                    mirror='gcloud',
+                    no_crop=True,
+                    product_type='L1C',
+                    cloud_masks=False,
+                    parallel_downloads=multiprocessing.cpu_count()
+                    )
+    paths = [glob.glob("./%s/*%s.jp2"%(outdir,b))[0] if len(glob.glob("./%s/*%s.jp2"%(outdir,b)))>0 else None for b in bands  ]
+    return paths
+    
+
+def get_SCL_band(tile,title,outdir):
+    mkdir("./"+outdir)
+    os.system("rm -r ./"+outdir)
+    mkdir("./"+outdir)
+    get_time_series(bands=['SCL'],
+                    tile_id=tile,
+                    title= title+'.SAFE',
+                    out_dir=outdir,
+                    api='scihub',
+                    mirror='gcloud',
+                    no_crop=True,
+                    product_type='L2A',
+                    cloud_masks=False,
+                    parallel_downloads=multiprocessing.cpu_count()
+                    )
+    path_scl = glob.glob("./%s/*SCL.jp2"%outdir)[0] if len(glob.glob("./%s/*SCL.jp2"%outdir))>0 else None
+    return path_scl
+
+def compute_cloud_mask(scl,upsample=False):
+    mh_prob_clouds = np.logical_or(scl == 8, scl == 0).astype(np.uint8) * 175
+    cirrus = (scl == 10).astype(np.uint8) * 100
+    snow = (scl == 11).astype(np.uint8) * 255
+    no_data = (scl == 0).astype(np.uint8) * 0
+
+    cloud_mask = mh_prob_clouds + cirrus + snow + no_data
+    if upsample:
+        cloud_mask = cloud_mask.repeat(2, axis=0).repeat(2, axis=1)
+    return scl
+
+def compute_rgb(paths):
+    b02 = rasterio.open(paths[1], "r")
+    b03 = rasterio.open(paths[2], "r")
+    b04 = rasterio.open(paths[3], "r")
+    rgb = np.stack((b04.read(True),b03.read(True),b02.read(True)),axis=-1)
+    b02.close()
+    b03.close()
+    b04.close()
+    return rgb
+
+def simple_equalization_8bit(im, percentiles=5):
+    mi, ma = np.percentile(im.flatten(), (percentiles,100-percentiles))
+    im = np.minimum(np.maximum(im,mi), ma) # clip
+    im = (im-mi)/(ma-mi)*255.0   # scale
+    im = im.astype(np.uint8)
+    return im
+
+
+
+
+random.seed(42)
 mkdir("./dataset")
 
 tiles = np.load("tiles.npy")
-tiles = [tiles[0], "51QUG"]
+random.shuffle(tiles)
+tiles = tiles[0:2]
+# tiles = ["51QUG"]
+# tiles = ["T50RNN"]
 
 first_date = datetime.datetime(2019, 12, 1)
 for i in range(4):
@@ -40,76 +119,68 @@ for i in range(4):
         image_catalog_l1c = tsd.get_sentinel2.search(aoi=None,tile_id=tile,product_type="L1C",start_date=start_date, end_date=end_date, api='scihub')
         image_catalog_l2a = tsd.get_sentinel2.search(aoi=None,tile_id=tile,product_type="L2A",start_date=start_date, end_date=end_date, api='scihub')
 
-        assert len(image_catalog_l1c)==len(image_catalog_l2a), "Error with: %i == %i" % (len(image_catalog_l1c),len(image_catalog_l2a))
-        if len(image_catalog_l1c)==0:
+        if len(image_catalog_l1c)==0 or len(image_catalog_l1c)!=len(image_catalog_l2a):
+            print("lenghts of two catalogs: %i - %i"% (len(image_catalog_l1c),len(image_catalog_l2a)))
             continue
+        
+        indices = []
+        for i in range(len(image_catalog_l2a)-1):
+            for j in np.arange(i,len(image_catalog_l2a)):
+                date_A = image_catalog_l2a[i]['date']
+                date_B = image_catalog_l2a[j]['date']
+                rd = relativedelta(date_B, date_A)
+                okdate = rd.years==0 and rd.months==0 and np.abs(rd.days) <= 7 and np.abs(rd.hours+rd.minutes/60)>2
+                if okdate:
+                    indices.append( [i,j] )
 
-        idx = 0
-        title_l1c = image_catalog_l1c[idx]['title']
-        title_l2a = image_catalog_l2a[idx]['title']
-        assert title_l1c.split("_")[2]==title_l2a.split("_")[2]
+        if len(indices)==0:
+            continue
+        print(len(indices))
+        idxs = list(range(len(indices)-1))
+        random.shuffle(idxs)
+        sclflag = False
+        for idx in idxs:
+            idx_A, idx_B = indices[idx]
 
+            title_l1c_A = image_catalog_l1c[idx_A]['title']
+            title_l2a_A = image_catalog_l2a[idx_A]['title']
+            date_A = image_catalog_l1c[idx_A]['date']
+            
+            title_l1c_B = image_catalog_l1c[idx_B]['title']
+            title_l2a_B = image_catalog_l2a[idx_B]['title']
+            date_B = image_catalog_l1c[idx_B]['date']
 
-        print(title_l1c,title_l2a)
-        mkdir("./test")
-        os.system("rm -r ./test")
-        mkdir("./test")
+            okboth = title_l1c_A.split("_")[2]==title_l2a_A.split("_")[2] and title_l1c_B.split("_")[2]==title_l2a_B.split("_")[2]
+            rd = relativedelta(date_B, date_A)
+            okdate = rd.years==0 and rd.months==0 and np.abs(rd.days) <= 7 and np.abs(rd.hours+rd.minutes/60)>2
+            if not (okboth and okdate):
+                print("Error with image pair! continuing...")
+                continue
+            else:
+                path_scl_A = get_SCL_band(tile, title_l2a_A, "query_A")
+                path_scl_B = get_SCL_band(tile, title_l2a_B, "query_B")
+                try:
+                    scl_A = rasterio.open(path_scl_A, "r")
+                    scl_B = rasterio.open(path_scl_B, "r")
+                except rasterio.errors.RasterioIOError:
+                    continue
+                sclflag = True
+                break
+        
+        if sclflag:
+            print(title_l2a_A,title_l2a_B)        
+            
+            cmA = scl_A.read(True)
+            # rio_write('query_A/cloud_mask.tif', compute_thumbnail(cmA,percentiles=0,downsamplestep=2) )
+            rio_write('query_A/cloud_mask.tif', cmA[::2,::2] )
+            cmB = scl_B.read(True)
+            # rio_write('query_B/cloud_mask.tif', compute_thumbnail(cmB,percentiles=0,downsamplestep=2) )
+            rio_write('query_B/cloud_mask.tif', cmB[::2,::2] )
 
-        # get_time_series(bands=['B02', 'B03', 'B04'],
-        #                 tile_id="51QUG",
-        #                 title= title_l1c+'.SAFE',
-        #                 out_dir="test",
-        #                 api='scihub',
-        #                 mirror='gcloud',
-        #                 no_crop=True,
-        #                 product_type='L1C',
-        #                 cloud_masks=False,
-        #                 parallel_downloads=multiprocessing.cpu_count()
-        #                 )
-
-
-        # get_time_series(bands=['SCL'],
-        #                 tile_id="51QUG",
-        #                 title= title_l2a+'.SAFE',
-        #                 out_dir="test",
-        #                 api='scihub',
-        #                 mirror='gcloud',
-        #                 no_crop=True,
-        #                 product_type='L2A',
-        #                 cloud_masks=False,
-        #                 parallel_downloads=multiprocessing.cpu_count()
-        #                 )
-
-
-        # path_b02 = glob.glob("./test/*B02.jp2")[0]
-        # path_b03 = glob.glob("./test/*B03.jp2")[0]
-        # path_b04 = glob.glob("./test/*B04.jp2")[0]
-        # path_scl = glob.glob("./test/*SCL.jp2")[0]
-        # b02 = rasterio.open(path_b02, "r")
-        # b03 = rasterio.open(path_b03, "r")
-        # b04 = rasterio.open(path_b04, "r")
-        # scl = rasterio.open(path_scl, "r")
-
-        # upsample = b02.shape[0]/scl.shape[0] 
-
-        # rgb = np.stack((b04.read(True),b03.read(True),b02.read(True)),axis=-1)
-
-        # scl = scl.read(True)
-        # mh_prob_clouds = np.logical_or(scl == 8, scl == 0).astype(np.uint8) * 150
-        # cirrus = (scl == 10).astype(np.uint8) * 50
-        # snow = (scl == 11).astype(np.uint8) * 255
-        # cloud_mask = mh_prob_clouds + cirrus
-        # cloud_mask = cloud_mask.repeat(2, axis=0).repeat(2, axis=1)
-
-        # def simple_equalization_8bit(im, percentiles=5):
-        #     ''' im is a numpy array
-        #         returns a numpy array
-        #     '''
-        #     mi, ma = np.percentile(im.flatten(), (percentiles,100-percentiles))
-        #     im = np.minimum(np.maximum(im,mi), ma) # clip
-        #     im = (im-mi)/(ma-mi)*255.0   # scale
-        #     im = im.astype(np.uint8)
-        #     return im   # return equalized image
-
-        # rio_write('test/rgb.tif', rgb )
-        # rio_write('test/cloud_mask.tif', cloud_mask )
+            paths_A = get_all_L1C_bands(tile, title_l1c_A, "query_A")
+            rio_write('query_A/rgb.tif', compute_rgb(paths_A)[::4,::4,:] )
+            paths_B = get_all_L1C_bands(tile, title_l1c_B, "query_B")
+            rio_write('query_B/rgb.tif', compute_rgb(paths_B)[::4,::4,:] )
+            
+            scl_A.close()
+            scl_B.close()
