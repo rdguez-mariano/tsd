@@ -19,7 +19,7 @@ from tsd.get_sentinel2 import get_time_series
 
 
 from rasterio.rio import stack
-from utils import rio_write, rio_dtype
+from utils import crop_aoi, rio_write, rio_dtype
 import glob
 from dateutil.relativedelta import relativedelta
 from library import *
@@ -177,10 +177,52 @@ for i in range(4):
             # rio_write('query_B/cloud_mask.tif', compute_thumbnail(cmB,percentiles=0,downsamplestep=2) )
             rio_write('query_B/cloud_mask.tif', cmB[::2,::2] )
 
-            paths_A = get_all_L1C_bands(tile, title_l1c_A, "query_A")
-            rio_write('query_A/rgb.tif', compute_rgb(paths_A)[::4,::4,:] )
-            paths_B = get_all_L1C_bands(tile, title_l1c_B, "query_B")
-            rio_write('query_B/rgb.tif', compute_rgb(paths_B)[::4,::4,:] )
+            found_pair = False
+
+            for i in range(30):
+                x, y = random.randint(0,cmA.shape[0]), random.randint(0,cmA.shape[1])
+                h, w = 256, 256
+                crop_A = cmA[x:(x+h),y:(y+h)]
+                crop_B = cmB[x:(x+h),y:(y+h)]
+                clouds_A = np.array(crop_A == 8) + np.array(crop_A == 9) #+ np.array(crop_A == 10)
+                clouds_B = np.array(crop_B == 8) + np.array(crop_B == 9) #+ np.array(crop_B == 10)
+                crop_okflag = np.all( np.array(crop_A != 0) * np.array(crop_B != 0) * np.array(crop_A != 1) * np.array(crop_B != 1) )
+                if not crop_okflag:
+                    continue
+                if np.sum(clouds_A + clouds_B)>0.2*h*w and np.sum(clouds_A * clouds_B)<0.05*h*w:
+                    found_pair = True
+                    # This pair might be good to save
+                    rio_write('query_A/scl_mask.tif', crop_A.repeat(2, axis=0).repeat(2, axis=1))
+                    rio_write('query_B/scl_mask.tif', crop_B.repeat(2, axis=0).repeat(2, axis=1))
+                    
+                    # equilize all band shapes and save them
+                    paths_A = get_all_L1C_bands(tile, title_l1c_A, "query_A")
+                    bands = [rasterio.open(p, "r").read(1) for p in paths_A]
+                    upsampled = [b.repeat(int(10980/b.shape[0]), axis=0).repeat(int(10980/b.shape[1]), axis=1) for b in bands]
+                    [rio_write("query_A/B%.2i.tif"%(i+1), b[2*x:(2*x+2*h),2*y:(2*y+2*h)]) for i,b in enumerate(upsampled)]
+
+                    paths_B = get_all_L1C_bands(tile, title_l1c_B, "query_B")
+                    bands = [rasterio.open(p, "r").read(1) for p in paths_B]
+                    upsampled = [b.repeat(int(10980/b.shape[0]), axis=0).repeat(int(10980/b.shape[1]), axis=1) for b in bands]
+                    [rio_write("query_B/B%.2i.tif"%(i+1), b[2*x:(2*x+2*h),2*y:(2*y+2*h)]) for i,b in enumerate(upsampled)]
+                
+
+                    # paths_A = get_all_L1C_bands(tile, title_l1c_A, "query_A")
+                    # rio_write('query_A/rgb.tif', compute_rgb(paths_A)[::4,::4,:] )
+                    # paths_B = get_all_L1C_bands(tile, title_l1c_B, "query_B")
+                    # rio_write('query_B/rgb.tif', compute_rgb(paths_B)[::4,::4,:] )
+                    break
             
             scl_A.close()
             scl_B.close()
+
+            if found_pair:
+                #copy to dataset
+                pass
+
+
+
+
+# at least 10 percent and less 90 percent clouds
+# no NO_DATA tags
+# 
