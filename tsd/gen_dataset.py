@@ -103,15 +103,16 @@ mkdir("./dataset")
 
 tiles = np.load("tiles.npy")
 random.shuffle(tiles)
-tiles = tiles[0:2]
-# tiles = ["51QUG"]
+# tiles = tiles[0:2]
+tiles = ["51QUG","T50RNN"]
 # tiles = ["T50RNN"]
 
-first_date = datetime.datetime(2019, 12, 1)
-for i in range(4):
-    start_date = first_date + relativedelta(months=i*3)
-    end_date = first_date + relativedelta(months=(i+1)*3) - relativedelta(days=1)
-    for tile in tiles:
+for tile in tiles:
+    first_date = datetime.datetime(2019, 12, 1)
+    for s_i in range(4):
+        start_date = first_date + relativedelta(months=s_i*3)
+        end_date = first_date + relativedelta(months=(s_i+1)*3) - relativedelta(days=1)
+
         # start_date = datetime.datetime(2020, 1, 1)
         # end_date = datetime.datetime(2020, 1, 31)
 
@@ -179,7 +180,7 @@ for i in range(4):
 
             found_pair = False
 
-            for i in range(30):
+            for i in range(100):
                 x, y = random.randint(0,cmA.shape[0]), random.randint(0,cmA.shape[1])
                 h, w = 256, 256
                 crop_A = cmA[x:(x+h),y:(y+h)]
@@ -192,37 +193,29 @@ for i in range(4):
                 if np.sum(clouds_A + clouds_B)>0.2*h*w and np.sum(clouds_A * clouds_B)<0.05*h*w:
                     found_pair = True
                     # This pair might be good to save
-                    rio_write('query_A/scl_mask.tif', crop_A.repeat(2, axis=0).repeat(2, axis=1))
-                    rio_write('query_B/scl_mask.tif', crop_B.repeat(2, axis=0).repeat(2, axis=1))
+
+                    mkdir("./dataset/"+tile)
+                    mkdir("./dataset/"+tile+"/S%i"%s_i)
+                    mkdir("./dataset/"+tile+"/S%i/t_0"%s_i)
+                    mkdir("./dataset/"+tile+"/S%i/t_1"%s_i)
+                    rio_write("./dataset/%s/S%i/t_0/scl_mask.tif"%(tile,s_i), crop_A.repeat(2, axis=0).repeat(2, axis=1))
+                    rio_write("./dataset/%s/S%i/t_1/scl_mask.tif"%(tile,s_i), crop_B.repeat(2, axis=0).repeat(2, axis=1))
+                    os.system("echo \"title_t_0 = %s\" > ./dataset/%s/S%i/metadata.log" % (title_l1c_A,tile,s_i) )
+                    os.system("echo \"title_t_1 = %s\" >> ./dataset/%s/S%i/metadata.log" % (title_l1c_B,tile,s_i) )
+                    os.system("echo \"top_left_coordinates = (%i, %i)\" >> ./dataset/%s/S%i/metadata.log" % (x,y,tile,s_i) )
                     
                     # equilize all band shapes and save them
                     paths_A = get_all_L1C_bands(tile, title_l1c_A, "query_A")
                     bands = [rasterio.open(p, "r").read(1) for p in paths_A]
                     upsampled = [b.repeat(int(10980/b.shape[0]), axis=0).repeat(int(10980/b.shape[1]), axis=1) for b in bands]
-                    [rio_write("query_A/B%.2i.tif"%(i+1), b[2*x:(2*x+2*h),2*y:(2*y+2*h)]) for i,b in enumerate(upsampled)]
+                    [rio_write("./dataset/%s/S%i/t_0/B%.2i.tif"%(tile,s_i,i+1), b[2*x:(2*x+2*h),2*y:(2*y+2*h)]) for i,b in enumerate(upsampled)]
 
                     paths_B = get_all_L1C_bands(tile, title_l1c_B, "query_B")
                     bands = [rasterio.open(p, "r").read(1) for p in paths_B]
                     upsampled = [b.repeat(int(10980/b.shape[0]), axis=0).repeat(int(10980/b.shape[1]), axis=1) for b in bands]
-                    [rio_write("query_B/B%.2i.tif"%(i+1), b[2*x:(2*x+2*h),2*y:(2*y+2*h)]) for i,b in enumerate(upsampled)]
-                
+                    [rio_write("./dataset/%s/S%i/t_1/B%.2i.tif"%(tile,s_i,i+1), b[2*x:(2*x+2*h),2*y:(2*y+2*h)]) for i,b in enumerate(upsampled)]
 
-                    # paths_A = get_all_L1C_bands(tile, title_l1c_A, "query_A")
-                    # rio_write('query_A/rgb.tif', compute_rgb(paths_A)[::4,::4,:] )
-                    # paths_B = get_all_L1C_bands(tile, title_l1c_B, "query_B")
-                    # rio_write('query_B/rgb.tif', compute_rgb(paths_B)[::4,::4,:] )
                     break
             
             scl_A.close()
             scl_B.close()
-
-            if found_pair:
-                #copy to dataset
-                pass
-
-
-
-
-# at least 10 percent and less 90 percent clouds
-# no NO_DATA tags
-# 
