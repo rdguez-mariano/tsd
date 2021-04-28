@@ -33,7 +33,7 @@ def get_all_L1C_bands(tile,title,outdir, flush = False):
         mkdir("./"+outdir)
         os.system("rm -r ./"+outdir)
         mkdir("./"+outdir)
-    bands = ["B%.2i"%(i+1) for i in range(12)]
+    bands = ["B%.2i"%(i+1) for i in range(12)] + ["B8A"]
     get_time_series(bands=bands,
                     tile_id=tile,
                     title= title+'.SAFE',
@@ -150,11 +150,12 @@ for tile in tiles:
             title_l1c_B = image_catalog_l1c[idx_B]['title']
             title_l2a_B = image_catalog_l2a[idx_B]['title']
             date_B = image_catalog_l1c[idx_B]['date']
-
+            
+            same_orbit = title_l1c_A.split("_")[4]==title_l2a_A.split("_")[4] and title_l1c_B.split("_")[4]==title_l2a_B.split("_")[4]
             okboth = title_l1c_A.split("_")[2]==title_l2a_A.split("_")[2] and title_l1c_B.split("_")[2]==title_l2a_B.split("_")[2]
             rd = relativedelta(date_B, date_A)
-            okdate = rd.years==0 and rd.months==0 and np.abs(rd.days) <= 7 and np.abs(rd.hours+rd.minutes/60)>2
-            if not (okboth and okdate):
+            okdate = rd.years==0 and rd.months==0 and np.abs(rd.days) <= 10 and np.abs(rd.hours+rd.minutes/60)>2
+            if not (okboth and okdate and same_orbit):
                 print("Error with image pair! continuing...")
                 continue
             else:

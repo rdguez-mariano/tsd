@@ -33,7 +33,7 @@ def get_all_L1C_bands(tile,title,outdir, flush = False):
         mkdir("./"+outdir)
         os.system("rm -r ./"+outdir)
         mkdir("./"+outdir)
-    bands = ["B%.2i"%(i+1) for i in range(12)]
+    bands = ["B%.2i"%(i+1) for i in range(12)] + ["B8A"]
     get_time_series(bands=bands,
                     tile_id=tile,
                     title= title+'.SAFE',
