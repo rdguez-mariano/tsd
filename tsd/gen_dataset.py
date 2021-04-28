@@ -95,7 +95,21 @@ def simple_equalization_8bit(im, percentiles=5):
     im = im.astype(np.uint8)
     return im
 
-
+def filter_catalogs(catalog1,catalog2):
+    newc1, newc2 = [], []
+    for p1 in catalog1:
+        count = 0
+        for p2 in catalog2:
+            title_1 = p1['title']
+            title_2 = p2['title']
+            same_orbit = title_1.split("_")[4]==title_2.split("_")[4]
+            dateflag = title_1.split("_")[2]==title_2.split("_")[2]
+            if same_orbit and dateflag:
+                newc1.append( p1 )
+                newc2.append( p2 ) 
+                count = count + 1
+        assert count<=1, "Error: the assumption for catalogs is not satisfied..." 
+    return newc1, newc2    
 
 
 random.seed(42)
@@ -104,7 +118,7 @@ mkdir("./dataset")
 tiles = np.load("tiles.npy")
 random.shuffle(tiles)
 # tiles = tiles[0:2]
-tiles = ["51QUG","T50RNN"]
+# tiles = ["51QUG","T50RNN"]
 # tiles = ["T50RNN"]
 
 for tile in tiles:
@@ -119,6 +133,8 @@ for tile in tiles:
         # run the query
         image_catalog_l1c = tsd.get_sentinel2.search(aoi=None,tile_id=tile,product_type="L1C",start_date=start_date, end_date=end_date, api='scihub')
         image_catalog_l2a = tsd.get_sentinel2.search(aoi=None,tile_id=tile,product_type="L2A",start_date=start_date, end_date=end_date, api='scihub')
+
+        image_catalog_l1c,image_catalog_l2a = filter_catalogs(image_catalog_l1c,image_catalog_l2a)
 
         if len(image_catalog_l1c)==0 or len(image_catalog_l1c)!=len(image_catalog_l2a):
             print("lenghts of two catalogs: %i - %i"% (len(image_catalog_l1c),len(image_catalog_l2a)))
