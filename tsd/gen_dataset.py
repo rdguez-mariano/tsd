@@ -2,7 +2,7 @@ import sys
 sys.path.append("..")
 import tsd
 
-
+from tqdm import tqdm
 import datetime
 import geojson
 import numpy as np                   # numeric linear algebra
@@ -24,6 +24,12 @@ import glob
 from dateutil.relativedelta import relativedelta
 from library import *
 
+
+# os.environ['COPERNICUS_LOGIN'] = 'rdguez-mariano'
+# os.environ['COPERNICUS_PASSWORD'] = 'b3c5e714034282ea5c'
+
+list_of_bands = ["B%.2i"%(i+1) for i in range(12)] + ["B8A"]
+
 def get_all_L1C_bands(tile,title,outdir, flush = False):
     """ Get all bands from the level 1C
     these bands differ in spatial resolution:
@@ -33,8 +39,8 @@ def get_all_L1C_bands(tile,title,outdir, flush = False):
         mkdir("./"+outdir)
         os.system("rm -r ./"+outdir)
         mkdir("./"+outdir)
-    bands = ["B%.2i"%(i+1) for i in range(12)] + ["B8A"]
-    get_time_series(bands=bands,
+
+    get_time_series(bands=list_of_bands,
                     tile_id=tile,
                     title= title+'.SAFE',
                     out_dir=outdir,
@@ -45,7 +51,7 @@ def get_all_L1C_bands(tile,title,outdir, flush = False):
                     cloud_masks=False,
                     parallel_downloads=multiprocessing.cpu_count()
                     )
-    paths = [glob.glob("./%s/*%s.jp2"%(outdir,b))[0] if len(glob.glob("./%s/*%s.jp2"%(outdir,b)))>0 else None for b in bands  ]
+    paths = [glob.glob("./%s/*%s.jp2"%(outdir,b))[0] if len(glob.glob("./%s/*%s.jp2"%(outdir,b)))>0 else None for b in list_of_bands  ]
     return paths
     
 
@@ -121,9 +127,9 @@ random.shuffle(tiles)
 # tiles = ["51QUG","T50RNN"]
 # tiles = ["T50RNN"]
 
-for tile in tiles:
+for tile in tqdm(tiles):
     first_date = datetime.datetime(2019, 12, 1)
-    for s_i in range(4):
+    for s_i in tqdm(range(4)):
         start_date = first_date + relativedelta(months=s_i*3)
         end_date = first_date + relativedelta(months=(s_i+1)*3) - relativedelta(days=1)
 
@@ -142,12 +148,13 @@ for tile in tiles:
         
         indices = []
         for i in range(len(image_catalog_l2a)-1):
-            for j in np.arange(i,len(image_catalog_l2a)):
+            for j in np.arange(i+1,len(image_catalog_l2a)):
                 date_A = image_catalog_l2a[i]['date']
                 date_B = image_catalog_l2a[j]['date']
                 rd = relativedelta(date_B, date_A)
-                okdate = rd.years==0 and rd.months==0 and np.abs(rd.days) <= 7 and np.abs(rd.hours+rd.minutes/60)>2
-                if okdate:
+                same_orbit = image_catalog_l2a[i]['title'].split("_")[4]==image_catalog_l2a[j]['title'].split("_")[4]
+                okdate = rd.years==0 and rd.months==0 and np.abs(rd.days) <= 10 and np.abs(rd.hours+rd.minutes/60)<2
+                if okdate and same_orbit:
                     indices.append( [i,j] )
 
         if len(indices)==0:
@@ -156,6 +163,7 @@ for tile in tiles:
         idxs = list(range(len(indices)-1))
         random.shuffle(idxs)
         sclflag = False
+        found_pair = False
         for idx in idxs:
             idx_A, idx_B = indices[idx]
 
@@ -170,7 +178,7 @@ for tile in tiles:
             same_orbit = title_l1c_A.split("_")[4]==title_l2a_A.split("_")[4] and title_l1c_B.split("_")[4]==title_l2a_B.split("_")[4]
             okboth = title_l1c_A.split("_")[2]==title_l2a_A.split("_")[2] and title_l1c_B.split("_")[2]==title_l2a_B.split("_")[2]
             rd = relativedelta(date_B, date_A)
-            okdate = rd.years==0 and rd.months==0 and np.abs(rd.days) <= 10 and np.abs(rd.hours+rd.minutes/60)>2
+            okdate = rd.years==0 and rd.months==0 and np.abs(rd.days) <= 10 and np.abs(rd.hours+rd.minutes/60)<2
             if not (okboth and okdate and same_orbit):
                 print("Error with image pair! continuing...")
                 continue
@@ -181,11 +189,9 @@ for tile in tiles:
                     scl_A = rasterio.open(path_scl_A, "r")
                     scl_B = rasterio.open(path_scl_B, "r")
                 except rasterio.errors.RasterioIOError:
+                    print("Corrupted slc...")
                     continue
-                sclflag = True
-                break
-        
-        if sclflag:
+
             print(title_l2a_A,title_l2a_B)        
             
             cmA = scl_A.read(True)
@@ -195,19 +201,20 @@ for tile in tiles:
             # rio_write('query_B/cloud_mask.tif', compute_thumbnail(cmB,percentiles=0,downsamplestep=2) )
             rio_write('query_B/cloud_mask.tif', cmB[::2,::2] )
 
-            found_pair = False
 
-            for i in range(100):
-                x, y = random.randint(0,cmA.shape[0]), random.randint(0,cmA.shape[1])
+            for i in range(1000):
                 h, w = 256, 256
-                crop_A = cmA[x:(x+h),y:(y+h)]
-                crop_B = cmB[x:(x+h),y:(y+h)]
+                x, y = random.randint(0,cmA.shape[0]-h), random.randint(0,cmA.shape[1]-w)
+                crop_A = cmA[x:(x+h),y:(y+w)]
+                crop_B = cmB[x:(x+h),y:(y+w)]
                 clouds_A = np.array(crop_A == 8) + np.array(crop_A == 9) #+ np.array(crop_A == 10)
                 clouds_B = np.array(crop_B == 8) + np.array(crop_B == 9) #+ np.array(crop_B == 10)
                 crop_okflag = np.all( np.array(crop_A != 0) * np.array(crop_B != 0) * np.array(crop_A != 1) * np.array(crop_B != 1) )
                 if not crop_okflag:
                     continue
-                if np.sum(clouds_A + clouds_B)>0.2*h*w and np.sum(clouds_A * clouds_B)<0.05*h*w:
+                if np.sum(np.logical_or(clouds_A, clouds_B))>0.2*h*w and np.sum(np.logical_or(clouds_A, clouds_B))<0.8*h*w \
+                    and np.sum(np.logical_and(clouds_A, clouds_B))<0.05*h*w:
+                # if np.sum(clouds_A)<0.01*h*w  and np.sum(clouds_B)>0.1*h*w and np.sum(clouds_B)<0.9*h*w:
                     found_pair = True
                     # This pair might be good to save
 
@@ -225,14 +232,17 @@ for tile in tiles:
                     paths_A = get_all_L1C_bands(tile, title_l1c_A, "query_A")
                     bands = [rasterio.open(p, "r").read(1) for p in paths_A]
                     upsampled = [b.repeat(int(10980/b.shape[0]), axis=0).repeat(int(10980/b.shape[1]), axis=1) for b in bands]
-                    [rio_write("./dataset/%s/S%i/t_0/B%.2i.tif"%(tile,s_i,i+1), b[2*x:(2*x+2*h),2*y:(2*y+2*h)]) for i,b in enumerate(upsampled)]
+                    [rio_write("./dataset/%s/S%i/t_0/%s.tif"%(tile,s_i,str_b), b[2*x:(2*x+2*h),2*y:(2*y+2*h)]) for str_b,b in zip(list_of_bands,upsampled)]
 
                     paths_B = get_all_L1C_bands(tile, title_l1c_B, "query_B")
                     bands = [rasterio.open(p, "r").read(1) for p in paths_B]
                     upsampled = [b.repeat(int(10980/b.shape[0]), axis=0).repeat(int(10980/b.shape[1]), axis=1) for b in bands]
-                    [rio_write("./dataset/%s/S%i/t_1/B%.2i.tif"%(tile,s_i,i+1), b[2*x:(2*x+2*h),2*y:(2*y+2*h)]) for i,b in enumerate(upsampled)]
+                    [rio_write("./dataset/%s/S%i/t_1/%s.tif"%(tile,s_i,str_b), b[2*x:(2*x+2*h),2*y:(2*y+2*h)]) for str_b,b in zip(list_of_bands,upsampled)]
 
                     break
             
             scl_A.close()
             scl_B.close()
+            
+            if found_pair:
+                break
