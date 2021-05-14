@@ -12,7 +12,7 @@ import utils          # IO and coordinate system conversion tools
 import pandas as pd
 import random
 
-
+from collections import OrderedDict
 from tsd import s2_metadata_parser
 import multiprocessing
 from tsd.get_sentinel2 import get_time_series
@@ -127,6 +127,28 @@ random.shuffle(tiles)
 # tiles = ["51QUG","T50RNN"]
 # tiles = ["T50RNN"]
 
+code = OrderedDict()
+code["vegetation"] = 4
+code["not_vegetated"] = 5
+code["water"] = 6
+code["snow"] = 11
+stats = OrderedDict()
+stats["vegetation"] = 0 
+stats["not_vegetated"] = 10
+stats["water"] = 0
+stats["snow"] = 0
+
+def PreferedClasses(s):
+    fields = [k for k,v in s.items()]
+    values = [v for k,v in s.items()]
+    idxs = np.argsort(values)
+    return [fields[i] for i in idxs][:-1],  [code[fields[i]] for i in idxs][:-1] 
+
+def computeScore(crop_A,crop_B, pcode, area):
+    mask_A = np.array(crop_A == pcode)
+    mask_B = np.array(crop_B == pcode)
+    return np.sum(np.logical_or(mask_A, mask_B)) / area
+
 for tile in tqdm(tiles):
     first_date = datetime.datetime(2019, 12, 1)
     for s_i in tqdm(range(4)):
@@ -188,8 +210,8 @@ for tile in tqdm(tiles):
                 try:
                     scl_A = rasterio.open(path_scl_A, "r")
                     scl_B = rasterio.open(path_scl_B, "r")
-                except rasterio.errors.RasterioIOError:
-                    print("Corrupted slc...")
+                except:
+                    print("Corrupted pair of slc...")
                     continue
 
             print(title_l2a_A,title_l2a_B)        
@@ -200,9 +222,58 @@ for tile in tqdm(tiles):
             cmB = scl_B.read(True)
             # rio_write('query_B/cloud_mask.tif', compute_thumbnail(cmB,percentiles=0,downsamplestep=2) )
             rio_write('query_B/cloud_mask.tif', cmB[::2,::2] )
+            
+            secondNiters = 1000
+            pclass_list, pcode_list = PreferedClasses(stats)
+            for pclass, pcode in zip(pclass_list,pcode_list):
+                if found_pair:
+                        break
+                for i in range(300):
+                    h, w = 256, 256
+                    x, y = random.randint(0,cmA.shape[0]-h), random.randint(0,cmA.shape[1]-w)
+                    crop_A = cmA[x:(x+h),y:(y+w)]
+                    crop_B = cmB[x:(x+h),y:(y+w)]
+                    clouds_A = np.array(crop_A == 8) + np.array(crop_A == 9) #+ np.array(crop_A == 10)
+                    clouds_B = np.array(crop_B == 8) + np.array(crop_B == 9) #+ np.array(crop_B == 10)
+                    
+                    mask_okflag = computeScore(crop_A,crop_B, pcode, h*w)>0.05
+                    if not mask_okflag:
+                        continue
+                    crop_okflag = np.all( np.array(crop_A != 0) * np.array(crop_B != 0) * np.array(crop_A != 1) * np.array(crop_B != 1) )
+                    if not crop_okflag:
+                        continue
+                    if np.sum(np.logical_or(clouds_A, clouds_B))>0.2*h*w and np.sum(np.logical_or(clouds_A, clouds_B))<0.8*h*w \
+                        and np.sum(np.logical_and(clouds_A, clouds_B))<0.05*h*w:
+                    # if np.sum(clouds_A)<0.01*h*w  and np.sum(clouds_B)>0.1*h*w and np.sum(clouds_B)<0.9*h*w:
+                        found_pair = True
+                        # This pair might be good to save
 
+                        mkdir("./dataset/"+tile)
+                        mkdir("./dataset/"+tile+"/S%i"%s_i)
+                        mkdir("./dataset/"+tile+"/S%i/t_0"%s_i)
+                        mkdir("./dataset/"+tile+"/S%i/t_1"%s_i)
+                        rio_write("./dataset/%s/S%i/t_0/scl_mask.tif"%(tile,s_i), crop_A.repeat(2, axis=0).repeat(2, axis=1))
+                        rio_write("./dataset/%s/S%i/t_1/scl_mask.tif"%(tile,s_i), crop_B.repeat(2, axis=0).repeat(2, axis=1))
+                        os.system("echo \"title_t_0 = %s\" > ./dataset/%s/S%i/metadata.log" % (title_l1c_A,tile,s_i) )
+                        os.system("echo \"title_t_1 = %s\" >> ./dataset/%s/S%i/metadata.log" % (title_l1c_B,tile,s_i) )
+                        os.system("echo \"top_left_coordinates = (%i, %i)\" >> ./dataset/%s/S%i/metadata.log" % (x,y,tile,s_i) )
+                        
+                        # equilize all band shapes and save them
+                        paths_A = get_all_L1C_bands(tile, title_l1c_A, "query_A")
+                        bands = [rasterio.open(p, "r").read(1) for p in paths_A]
+                        upsampled = [b.repeat(int(10980/b.shape[0]), axis=0).repeat(int(10980/b.shape[1]), axis=1) for b in bands]
+                        [rio_write("./dataset/%s/S%i/t_0/%s.tif"%(tile,s_i,str_b), b[2*x:(2*x+2*h),2*y:(2*y+2*h)]) for str_b,b in zip(list_of_bands,upsampled)]
 
-            for i in range(1000):
+                        paths_B = get_all_L1C_bands(tile, title_l1c_B, "query_B")
+                        bands = [rasterio.open(p, "r").read(1) for p in paths_B]
+                        upsampled = [b.repeat(int(10980/b.shape[0]), axis=0).repeat(int(10980/b.shape[1]), axis=1) for b in bands]
+                        [rio_write("./dataset/%s/S%i/t_1/%s.tif"%(tile,s_i,str_b), b[2*x:(2*x+2*h),2*y:(2*y+2*h)]) for str_b,b in zip(list_of_bands,upsampled)]
+                        secondNiters = -1
+                        for tclass, tcode in zip(pclass_list,pcode_list):
+                            stats[tclass] = stats[tclass] + computeScore(crop_A,crop_B, tcode, h*w)
+                        break
+
+            for i in range(secondNiters):
                 h, w = 256, 256
                 x, y = random.randint(0,cmA.shape[0]-h), random.randint(0,cmA.shape[1]-w)
                 crop_A = cmA[x:(x+h),y:(y+w)]
