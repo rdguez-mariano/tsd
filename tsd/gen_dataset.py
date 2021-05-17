@@ -13,6 +13,7 @@ import pandas as pd
 import random
 
 from collections import OrderedDict
+import json
 from tsd import s2_metadata_parser
 import multiprocessing
 from tsd.get_sentinel2 import get_time_series
@@ -117,6 +118,20 @@ def filter_catalogs(catalog1,catalog2):
         assert count<=1, "Error: the assumption for catalogs is not satisfied..." 
     return newc1, newc2    
 
+def save_ordereddict(d,filepath):
+    with open(filepath, 'w') as f:
+        f.write(json.dumps(list(d.items())))
+
+def load_ordereddict(filepath):
+    with open(filepath, 'r') as read_file:
+        dvec = json.loads(read_file.read())
+    dout = OrderedDict()
+    for d in dvec:
+        for i in range(int(len(d)/2)):
+            dout[d[2*i]] = d[2*i+1]
+    return dout
+
+statusfile = "./dataset/status.dat"
 
 random.seed(42)
 mkdir("./dataset")
@@ -127,16 +142,23 @@ random.shuffle(tiles)
 # tiles = ["51QUG","T50RNN"]
 # tiles = ["T50RNN"]
 
-code = OrderedDict()
-code["vegetation"] = 4
-code["not_vegetated"] = 5
-code["water"] = 6
-code["snow"] = 11
-stats = OrderedDict()
-stats["vegetation"] = 0 
-stats["not_vegetated"] = 10
-stats["water"] = 0
-stats["snow"] = 0
+if os.path.exists(statusfile):
+    tmp = load_ordereddict(statusfile)
+    code = tmp["code"]
+    stats = tmp["stats"]
+    tiles_done = tmp["tiles_done"]
+else:
+    code = OrderedDict()
+    code["vegetation"] = 4
+    code["not_vegetated"] = 5
+    code["water"] = 6
+    code["snow"] = 11
+    stats = OrderedDict()
+    stats["vegetation"] = 0 
+    stats["not_vegetated"] = 0
+    stats["water"] = 0
+    stats["snow"] = 0
+    tiles_done = []
 
 def PreferedClasses(s):
     fields = [k for k,v in s.items()]
@@ -149,7 +171,22 @@ def computeScore(crop_A,crop_B, pcode, area):
     mask_B = np.array(crop_B == pcode)
     return np.sum(np.logical_or(mask_A, mask_B)) / area
 
+def check_tile_season(tile,s_i):
+    """ usage: 
+    if check_tile_season(tile,s_i):
+            continue
+    """
+    metadata = os.path.exists("./dataset/%s/S%i/metadata.log" % (tile,s_i))                    
+    files_t_0 = [os.path.exists("./dataset/%s/S%i/t_0/%s.tif"%(tile,s_i,str_b)) for str_b in list_of_bands]
+    files_t_1 = [os.path.exists("./dataset/%s/S%i/t_1/%s.tif"%(tile,s_i,str_b)) for str_b in list_of_bands]
+    if np.all(files_t_0) and np.all(files_t_1) and metadata:
+        return True
+    else:
+        return False
+
 for tile in tqdm(tiles):
+    if tile in tiles_done:
+        continue
     first_date = datetime.datetime(2019, 12, 1)
     for s_i in tqdm(range(4)):
         start_date = first_date + relativedelta(months=s_i*3)
@@ -309,7 +346,9 @@ for tile in tqdm(tiles):
                     bands = [rasterio.open(p, "r").read(1) for p in paths_B]
                     upsampled = [b.repeat(int(10980/b.shape[0]), axis=0).repeat(int(10980/b.shape[1]), axis=1) for b in bands]
                     [rio_write("./dataset/%s/S%i/t_1/%s.tif"%(tile,s_i,str_b), b[2*x:(2*x+2*h),2*y:(2*y+2*h)]) for str_b,b in zip(list_of_bands,upsampled)]
-
+                    
+                    for tclass, tcode in zip(pclass_list,pcode_list):
+                            stats[tclass] = stats[tclass] + computeScore(crop_A,crop_B, tcode, h*w)
                     break
             
             scl_A.close()
@@ -317,3 +356,10 @@ for tile in tqdm(tiles):
             
             if found_pair:
                 break
+    
+    tiles_done.append(tile)
+    tmp = OrderedDict()
+    tmp["code"] = code
+    tmp["stats"] = stats
+    tmp["tiles_done"] = tiles_done
+    save_ordereddict(tmp, statusfile)
