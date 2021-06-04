@@ -16,7 +16,7 @@ from collections import OrderedDict
 import json
 from tsd import s2_metadata_parser
 import multiprocessing
-from tsd.get_sentinel2 import get_time_series
+from tsd.get_sentinel2 import get_time_series, get_time_series_metadata, get_time_series_from_metadata
 
 
 from rasterio.rio import stack
@@ -41,7 +41,7 @@ def get_all_L1C_bands(tile,title,outdir, flush = False):
         os.system("rm -r ./"+outdir)
         mkdir("./"+outdir)
 
-    get_time_series(bands=list_of_bands,
+    metadata = get_time_series_metadata(bands=list_of_bands,
                     tile_id=tile,
                     title= title+'.SAFE',
                     out_dir=outdir,
@@ -52,15 +52,15 @@ def get_all_L1C_bands(tile,title,outdir, flush = False):
                     cloud_masks=False,
                     parallel_downloads=multiprocessing.cpu_count()
                     )
-    paths = [glob.glob("./%s/*%s.jp2"%(outdir,b))[0] if len(glob.glob("./%s/*%s.jp2"%(outdir,b)))>0 else None for b in list_of_bands  ]
-    return paths
+    paths = ["./"+fname.replace(".tif", ".jp2") for fname, url in metadata]
+    return metadata, paths
     
 
 def get_SCL_band(tile,title,outdir):
     mkdir("./"+outdir)
     os.system("rm -r ./"+outdir)
     mkdir("./"+outdir)
-    get_time_series(bands=['SCL'],
+    metadata = get_time_series_metadata(bands=['SCL'],
                     tile_id=tile,
                     title= title+'.SAFE',
                     out_dir=outdir,
@@ -71,8 +71,8 @@ def get_SCL_band(tile,title,outdir):
                     cloud_masks=False,
                     parallel_downloads=multiprocessing.cpu_count()
                     )
-    path_scl = glob.glob("./%s/*SCL.jp2"%outdir)[0] if len(glob.glob("./%s/*SCL.jp2"%outdir))>0 else None
-    return path_scl
+    paths = ["./"+fname.replace(".tif", ".jp2") for fname, url in metadata]
+    return metadata, paths[0]
 
 def compute_cloud_mask(scl,upsample=False):
     mh_prob_clouds = np.logical_or(scl == 8, scl == 0).astype(np.uint8) * 175
@@ -242,9 +242,11 @@ for tile in tqdm(tiles):
                 print("Error with image pair! continuing...")
                 continue
             else:
-                path_scl_A = get_SCL_band(tile, title_l2a_A, "query_A")
-                path_scl_B = get_SCL_band(tile, title_l2a_B, "query_B")
                 try:
+                    metadata_scl_A, path_scl_A = get_SCL_band(tile, title_l2a_A, "query_A")
+                    metadata_scl_B, path_scl_B = get_SCL_band(tile, title_l2a_B, "query_B")
+                    metadata = metadata_scl_A + metadata_scl_B
+                    get_time_series_from_metadata(metadata, pool_type='processes', parallel_downloads=2)
                     scl_A = rasterio.open(path_scl_A, "r")
                     scl_B = rasterio.open(path_scl_B, "r")
                 except:
@@ -296,12 +298,14 @@ for tile in tqdm(tiles):
                         os.system("echo \"top_left_coordinates = (%i, %i)\" >> ./dataset/%s/S%i/metadata.log" % (x,y,tile,s_i) )
                         
                         # equilize all band shapes and save them
-                        paths_A = get_all_L1C_bands(tile, title_l1c_A, "query_A")
+                        metadata_A, paths_A = get_all_L1C_bands(tile, title_l1c_A, "query_A")
+                        metadata_B, paths_B = get_all_L1C_bands(tile, title_l1c_B, "query_B")
+                        metadata = metadata_A + metadata_B
+                        get_time_series_from_metadata(metadata, pool_type='processes', parallel_downloads=26, timeout=20*60)
                         bands = [rasterio.open(p, "r").read(1) for p in paths_A]
                         upsampled = [b.repeat(int(10980/b.shape[0]), axis=0).repeat(int(10980/b.shape[1]), axis=1) for b in bands]
                         [rio_write("./dataset/%s/S%i/t_0/%s.tif"%(tile,s_i,str_b), b[2*x:(2*x+2*h),2*y:(2*y+2*h)]) for str_b,b in zip(list_of_bands,upsampled)]
 
-                        paths_B = get_all_L1C_bands(tile, title_l1c_B, "query_B")
                         bands = [rasterio.open(p, "r").read(1) for p in paths_B]
                         upsampled = [b.repeat(int(10980/b.shape[0]), axis=0).repeat(int(10980/b.shape[1]), axis=1) for b in bands]
                         [rio_write("./dataset/%s/S%i/t_1/%s.tif"%(tile,s_i,str_b), b[2*x:(2*x+2*h),2*y:(2*y+2*h)]) for str_b,b in zip(list_of_bands,upsampled)]
@@ -337,12 +341,15 @@ for tile in tqdm(tiles):
                     os.system("echo \"top_left_coordinates = (%i, %i)\" >> ./dataset/%s/S%i/metadata.log" % (x,y,tile,s_i) )
                     
                     # equilize all band shapes and save them
-                    paths_A = get_all_L1C_bands(tile, title_l1c_A, "query_A")
+                    metadata_A, paths_A = get_all_L1C_bands(tile, title_l1c_A, "query_A")
+                    metadata_B, paths_B = get_all_L1C_bands(tile, title_l1c_B, "query_B")
+                    metadata = metadata_A + metadata_B
+                    get_time_series_from_metadata(metadata, pool_type='processes', parallel_downloads=26, timeout=20*60)
+                    
                     bands = [rasterio.open(p, "r").read(1) for p in paths_A]
                     upsampled = [b.repeat(int(10980/b.shape[0]), axis=0).repeat(int(10980/b.shape[1]), axis=1) for b in bands]
                     [rio_write("./dataset/%s/S%i/t_0/%s.tif"%(tile,s_i,str_b), b[2*x:(2*x+2*h),2*y:(2*y+2*h)]) for str_b,b in zip(list_of_bands,upsampled)]
 
-                    paths_B = get_all_L1C_bands(tile, title_l1c_B, "query_B")
                     bands = [rasterio.open(p, "r").read(1) for p in paths_B]
                     upsampled = [b.repeat(int(10980/b.shape[0]), axis=0).repeat(int(10980/b.shape[1]), axis=1) for b in bands]
                     [rio_write("./dataset/%s/S%i/t_1/%s.tif"%(tile,s_i,str_b), b[2*x:(2*x+2*h),2*y:(2*y+2*h)]) for str_b,b in zip(list_of_bands,upsampled)]

@@ -107,6 +107,62 @@ def search(aoi=None, start_date=None, end_date=None, product_type="L2A",
     return images
 
 
+def prepare_download(imgs, bands, aoi, mirror, out_dir, parallel_downloads, no_crop=False):
+    """
+    Prepare for download a timeseries of crops with GDAL VSI feature.
+
+    Args:
+        imgs (list): list of images
+        bands (list): list of bands
+        aoi (geojson.Polygon): area of interest
+        mirror (str): either 'aws' or 'gcloud'
+        out_dir (str): path where to store the downloaded crops
+        parallel_downloads (int): number of parallel downloads
+        no_crop (bool): don't crop but instead download the original JP2 files
+    """
+    if mirror == "gcloud":
+        parallel.run_calls(s2_metadata_parser.Sentinel2Image.build_gs_links,
+                           imgs, pool_type='threads',
+                           verbose=False,
+                           nb_workers=parallel_downloads)
+    elif mirror == "aws":
+        parallel.run_calls(s2_metadata_parser.Sentinel2Image.build_s3_links,
+                           imgs, pool_type='threads',
+                           verbose=False,
+                           nb_workers=parallel_downloads)
+    else:
+        raise ValueError(f"Unknown mirror {mirror}")
+
+    crops_args = []
+    nb_removed = 0
+    for img in imgs:
+
+        if not img.urls[mirror]:  # then it cannot be downloaded
+            nb_removed = nb_removed + 1
+            continue
+
+        # convert aoi coords from (lon, lat) to UTM in the zone of the image
+        coords = ()
+        if aoi is not None:
+            coords = utils.utm_bbx(aoi, epsg=int(img.epsg),
+                                   r=60)  # round to multiples of 60 (B01 resolution)
+
+        for b in bands:
+            fname = os.path.join(out_dir, '{}_band_{}.tif'.format(img.filename, b))
+            crops_args.append((fname, img.urls[mirror][b], *coords))
+
+    if nb_removed:
+        print('Removed {} image(s) with invalid urls'.format(nb_removed))
+
+    out_dir = os.path.abspath(os.path.expanduser(out_dir))
+    os.makedirs(out_dir, exist_ok=True)
+    print('Preparing for download {} crops ({} images with {} bands)...'.format(len(crops_args),
+                                                                     len(imgs) - nb_removed,
+                                                                     len(bands)))
+    return crops_args
+
+
+
 def download(imgs, bands, aoi, mirror, out_dir, parallel_downloads, no_crop=False):
     """
     Download a timeseries of crops with GDAL VSI feature.
@@ -264,6 +320,57 @@ def read_cloud_masks(aoi, imgs, bands, mirror, parallel_downloads, p=0.5,
                 shutil.move(os.path.join(out_dir, f),
                             os.path.join(out_dir, 'cloudy', f))
 
+
+
+def get_time_series_metadata(aoi=None, start_date=None, end_date=None, bands=["B04"],
+                    tile_id=None, title=None, relative_orbit_number=None,
+                    out_dir="", api="stac", mirror="aws",
+                    product_type="L2A", cloud_masks=False,
+                    parallel_downloads=multiprocessing.cpu_count(),
+                    satellite_angles=False, no_crop=False):
+    """
+    Similar to get_time_series but just gets the metadata for further download
+
+    Args:
+        aoi (geojson.Polygon): area of interest
+        start_date (datetime.datetime, optional): start of the time range
+        end_date (datetime.datetime, optional): end of the time range
+        bands (list, optional): list of bands
+        tile_id (str): MGRS tile identifier, e.g. "31TCJ"
+        title (str): product title, e.g. "S2A_MSIL1C_20160105T143732_N0201_R096_T19KGT_20160105T143758"
+        relative_orbit_number (int): relative orbit number, from 1 to 143
+        out_dir (str, optional): path where to store the downloaded crops
+        api (str, optional): either stac (default), scihub, planet or gcloud
+        mirror (str, optional): either 'aws' (default) or 'gcloud'
+        product_type (str, optional): either 'L1C' or 'L2A' (default)
+        cloud_masks (bool, optional): if True, cloud masks are downloaded and
+            cloudy images are discarded
+        parallel_downloads (int): number of parallel gml files downloads
+        satellite_angles (bool): whether or not to download satellite zenith
+            and azimuth angles and include them in metadata
+        no_crop (bool): if True, download original JP2 files rather than crops
+    """
+    # list available images
+    images = search(aoi, start_date, end_date,
+                    relative_orbit_number=relative_orbit_number,
+                    tile_id=tile_id,
+                    title=title,
+                    product_type=product_type,
+                    api=api)
+
+    # download crops
+    metadata_args = prepare_download(images, bands, aoi, mirror, out_dir, parallel_downloads, no_crop)
+    return metadata_args
+
+def download_from_metadata(fname, url):
+    # fname, url, *_ = metadata_arg
+    ext = url.split(".")[-1]  # jp2, TIF, ...
+    utils.download(url, fname.replace(".tif", f".{ext}"))
+
+def get_time_series_from_metadata(metadata_args, pool_type='threads', timeout=10*60, parallel_downloads=multiprocessing.cpu_count()):
+    parallel.run_calls(download_from_metadata, metadata_args,
+                           pool_type=pool_type, timeout=timeout,
+                           nb_workers=parallel_downloads)
 
 def get_time_series(aoi=None, start_date=None, end_date=None, bands=["B04"],
                     tile_id=None, title=None, relative_orbit_number=None,
