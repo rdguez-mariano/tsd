@@ -184,6 +184,17 @@ def check_tile_season(tile,s_i):
     else:
         return False
 
+def scl_coherence(crop_A, crop_B):
+    h, w = np.shape(crop_A)
+    clouds_A = np.logical_or(crop_A == 8, crop_A == 9)#, crop_A == 10)
+    clouds_B = np.logical_or(crop_B == 8, crop_B == 9)#, crop_B == 10)
+    res = np.sum(np.logical_or(clouds_A, clouds_B))>0.1*h*w and np.sum(np.logical_or(clouds_A, clouds_B))<0.6*h*w \
+                        and np.sum(np.logical_and(clouds_A, clouds_B))<0.05*h*w
+    equal_but_clouds = np.sum(crop_A == crop_B) - ( np.sum(np.logical_and(crop_A == 8, crop_B == 8)) + np.sum(np.logical_and(crop_A == 9, crop_B == 9)) )
+    both_visible = h*w - np.sum(np.logical_or(clouds_A, clouds_B))
+    res = res and ( equal_but_clouds >= 0.5*both_visible  )
+    return res
+
 for tile in tqdm(tiles):
     if tile in tiles_done:
         continue
@@ -272,8 +283,6 @@ for tile in tqdm(tiles):
                     x, y = random.randint(0,cmA.shape[0]-h), random.randint(0,cmA.shape[1]-w)
                     crop_A = cmA[x:(x+h),y:(y+w)]
                     crop_B = cmB[x:(x+h),y:(y+w)]
-                    clouds_A = np.array(crop_A == 8) + np.array(crop_A == 9) #+ np.array(crop_A == 10)
-                    clouds_B = np.array(crop_B == 8) + np.array(crop_B == 9) #+ np.array(crop_B == 10)
                     
                     mask_okflag = computeScore(crop_A,crop_B, pcode, h*w)>0.05
                     if not mask_okflag:
@@ -281,9 +290,7 @@ for tile in tqdm(tiles):
                     crop_okflag = np.all( np.array(crop_A != 0) * np.array(crop_B != 0) * np.array(crop_A != 1) * np.array(crop_B != 1) )
                     if not crop_okflag:
                         continue
-                    if np.sum(np.logical_or(clouds_A, clouds_B))>0.2*h*w and np.sum(np.logical_or(clouds_A, clouds_B))<0.8*h*w \
-                        and np.sum(np.logical_and(clouds_A, clouds_B))<0.05*h*w:
-                    # if np.sum(clouds_A)<0.01*h*w  and np.sum(clouds_B)>0.1*h*w and np.sum(clouds_B)<0.9*h*w:
+                    if scl_coherence(crop_A, crop_B):
                         found_pair = True
                         # This pair might be good to save
 
@@ -319,14 +326,10 @@ for tile in tqdm(tiles):
                 x, y = random.randint(0,cmA.shape[0]-h), random.randint(0,cmA.shape[1]-w)
                 crop_A = cmA[x:(x+h),y:(y+w)]
                 crop_B = cmB[x:(x+h),y:(y+w)]
-                clouds_A = np.array(crop_A == 8) + np.array(crop_A == 9) #+ np.array(crop_A == 10)
-                clouds_B = np.array(crop_B == 8) + np.array(crop_B == 9) #+ np.array(crop_B == 10)
                 crop_okflag = np.all( np.array(crop_A != 0) * np.array(crop_B != 0) * np.array(crop_A != 1) * np.array(crop_B != 1) )
                 if not crop_okflag:
                     continue
-                if np.sum(np.logical_or(clouds_A, clouds_B))>0.2*h*w and np.sum(np.logical_or(clouds_A, clouds_B))<0.8*h*w \
-                    and np.sum(np.logical_and(clouds_A, clouds_B))<0.05*h*w:
-                # if np.sum(clouds_A)<0.01*h*w  and np.sum(clouds_B)>0.1*h*w and np.sum(clouds_B)<0.9*h*w:
+                if scl_coherence(crop_A, crop_B):
                     found_pair = True
                     # This pair might be good to save
 
